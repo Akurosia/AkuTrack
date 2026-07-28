@@ -53,6 +53,9 @@ public sealed class Plugin : IDalamudPlugin
         IGameGui gameGui,
         IPluginLog pluginLog,
         IObjectTable objectTable,
+        IPartyList partyList,
+        IFateTable fateTable,
+        IAetheryteList aetheryteList,
         IGameInteropProvider gameInteropProvider,
         ITextureSubstitutionProvider textureSubstitutionProvider)
     {
@@ -60,7 +63,12 @@ public sealed class Plugin : IDalamudPlugin
         //var goatImagePath = Path.Combine(PluginInterface.AssemblyLocation.Directory?.FullName!, "goat.png");
 
         var configuration = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
-        configuration.Version = 0;
+        if (configuration.Version < 1)
+        {
+            configuration.DrawCriticalEngagements = true;
+            configuration.DrawContentFinderCriticalEngagements = true;
+            configuration.Version = 1;
+        }
         pluginInterface.SavePluginConfig(configuration);
 
         serviceProvider = new ServiceCollection()
@@ -74,6 +82,9 @@ public sealed class Plugin : IDalamudPlugin
             .AddSingleton(gameGui)
             .AddSingleton(pluginLog)
             .AddSingleton(objectTable)
+            .AddSingleton(partyList)
+            .AddSingleton(fateTable)
+            .AddSingleton(aetheryteList)
             .AddSingleton(textureSubstitutionProvider)
             .AddSingleton(configuration)
             .AddSingleton<MainWindow>()
@@ -174,6 +185,7 @@ public sealed class Plugin : IDalamudPlugin
     private void OnFrameworkUpdate(IFramework framework)
     {
         var isGameMapVisible = IsGameMapVisible();
+        MapWindow.FocusCurrentFlagMarkerIfNeeded();
 
         if (Configuration.ReplaceGameMap)
         {
@@ -245,6 +257,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private unsafe void OpenMapDetour(AgentMap* thisPtr, OpenMapInfo* data)
     {
+        var isFlagMapOpen = data != null && data->Type == MapType.FlagMarker;
         var isMapKeyOpen = data == null;
         var replaceGameMap = Configuration.ReplaceGameMap;
         var allowGameMap = replaceGameMap && (allowedGameMapVisible || IsGameMapModifierPressed());
@@ -255,6 +268,11 @@ public sealed class Plugin : IDalamudPlugin
             if (Configuration.ToggleMapWithGameMap)
             {
                 MapWindow.CaptureSelectedMapFromAgent();
+            }
+
+            if (isFlagMapOpen)
+            {
+                MapWindow.FocusCurrentFlagMarkerOnNextDraw();
             }
 
             return;
@@ -274,6 +292,11 @@ public sealed class Plugin : IDalamudPlugin
         else
         {
             handledReplacementMapOpen = false;
+        }
+
+        if (isFlagMapOpen)
+        {
+            MapWindow.FocusCurrentFlagMarkerOnNextDraw();
         }
     }
 

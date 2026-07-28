@@ -18,6 +18,7 @@ namespace AkuTrack.Managers
         public event Action<uint>? PlaceSelectedItemChanged;
         
         public event Action<uint>? SubSelectedItemChanged;
+        public event Action<Map>? CurrentMapChanged;
         
         public enum FilteredRegions : uint
         {
@@ -63,7 +64,13 @@ namespace AkuTrack.Managers
         }
 
         public async void SwitchMap(uint mapId) {
-            currentMap = dataManager.GetExcelSheet<Map>().GetRow(mapId);
+            if (!dataManager.GetExcelSheet<Map>().TryGetRow(mapId, out var nextMap))
+            {
+                return;
+            }
+
+            currentMap = nextMap;
+            CurrentMapChanged?.Invoke(currentMap);
             var objs = await objTrackManager.FetchAkuGameObjectsFromAkuAPI(mapId);
             objTrackManager.downloadHashList.Clear();
             foreach (var obj in objs)

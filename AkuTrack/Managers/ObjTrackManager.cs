@@ -270,6 +270,11 @@ namespace AkuTrack.Managers
         {
             List<AkuGameObject> res = new();
             var objs = await uploadManager.DownloadMapContentFromAPI(mid);
+            var downloadedTypes = objs
+                .GroupBy(obj => obj.t)
+                .OrderBy(group => group.Key)
+                .Select(group => $"{group.Key}:{group.Count()}");
+            log.Debug($"Downloaded map {mid} content types: {string.Join(", ", downloadedTypes)}");
             foreach (var obj in objs)
             {
                 if (obj.objectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventNpc)

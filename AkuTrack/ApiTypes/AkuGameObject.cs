@@ -44,9 +44,15 @@ namespace AkuTrack.ApiTypes
         public AkuGameObject(DownloadGameObject dgo) {
             this.created_at = dgo.created_at;
             this.lastseen_at = dgo.last_seen_at;
-            this.objectKind = Enum.TryParse<ObjectKind>(dgo.objecttype, out var parsedObjectKind)
-                ? parsedObjectKind
-                : ObjectKind.None;
+            if (Enum.TryParse<ObjectKind>(dgo.objecttype, out var parsedObjectKind))
+            {
+                this.objectKind = parsedObjectKind;
+            }
+            else
+            {
+                this.objectKind = ObjectKind.None;
+                this.syntheticType = dgo.objecttype;
+            }
             this.name = "<downloaded>";
             this.mid = dgo.map_id;
             this.zid = dgo.zone_id;
@@ -64,13 +70,15 @@ namespace AkuTrack.ApiTypes
         public DateTimeOffset? created_at { get; set; }
         [JsonIgnore]
         public DateTimeOffset? lastseen_at { get; set; }
-        public string t { get { return objectKind.ToString(); } }
+        public string t { get { return syntheticType ?? objectKind.ToString(); } }
         [JsonIgnore]
         public string name { get; set; }
         [JsonIgnore]
         public bool isDownloaded { get; set; } = false;
         [JsonIgnore]
         public ObjectKind objectKind { get; set;  }
+        [JsonIgnore]
+        public string? syntheticType { get; set; }
         [JsonIgnore]
         public BattleNpcSubKind? battleNpcSubKind { get; set; }
         [JsonIgnore]

@@ -39,9 +39,9 @@ public class Configuration : IPluginConfiguration
     public bool DrawTreasureMaps { get; set; } = false;
     public bool DrawFishingSpots { get; set; } = false;
     public bool DrawSpearfishingSpots { get; set; } = false;
-    public bool DrawQuestMarkers { get; set; } = false;
+    public bool DrawQuestMarkers { get; set; } = true;
     public bool DrawHousingMapMarkers { get; set; } = false;
-    public bool DrawCriticalEngagements { get; set; } = false;
+    public bool DrawCriticalEngagements { get; set; } = true;
     public bool DrawFates { get; set; } = true;
     public bool DrawMapMarkersWithIcons { get; set; } = true;
     public bool DrawMapMarkerLabelsOnly { get; set; } = true;
@@ -56,9 +56,9 @@ public class Configuration : IPluginConfiguration
     public bool DrawContentFinderTreasureMaps { get; set; } = false;
     public bool DrawContentFinderFishingSpots { get; set; } = false;
     public bool DrawContentFinderSpearfishingSpots { get; set; } = false;
-    public bool DrawContentFinderQuestMarkers { get; set; } = false;
+    public bool DrawContentFinderQuestMarkers { get; set; } = true;
     public bool DrawContentFinderHousingMapMarkers { get; set; } = false;
-    public bool DrawContentFinderCriticalEngagements { get; set; } = false;
+    public bool DrawContentFinderCriticalEngagements { get; set; } = true;
     public bool DrawContentFinderFates { get; set; } = true;
     public bool DrawContentFinderMapMarkersWithIcons { get; set; } = true;
     public bool DrawContentFinderMapMarkerLabelsOnly { get; set; } = true;
@@ -91,7 +91,7 @@ public class Configuration : IPluginConfiguration
 
     public bool IsTreasureMapRankEnabled(uint rankId)
     {
-        return TreasureMapRankToggles.TryGetValue(rankId, out var enabled) && enabled;
+        return !TreasureMapRankToggles.TryGetValue(rankId, out var enabled) || enabled;
     }
 
     public void SetTreasureMapRankEnabled(uint rankId, bool enabled)
@@ -181,7 +181,7 @@ public class Configuration : IPluginConfiguration
 
     private static bool GetDefaultIconCategoryEntryEnabled(string category)
     {
-        return category is "GatheringPoint" or "EventObj";
+        return category is "GatheringPoint" or "EventObj" or "Quest";
     }
 
     // The below exists just to make saving less cumbersome

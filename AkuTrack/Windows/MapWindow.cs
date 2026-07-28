@@ -1,6 +1,8 @@
 using AkuTrack.ApiTypes;
 using AkuTrack.Managers;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Game;
+using Dalamud.Game.ClientState.Fates;
 using Dalamud.Game.ClientState.Objects.Enums;
 using Dalamud.Game.ClientState.Objects.Types;
 using Dalamud.Interface.Textures;
@@ -11,6 +13,8 @@ using Dalamud.Interface.Windowing;
 using Dalamud.Plugin.Services;
 using Dalamud.Utility;
 using FFXIVClientStructs.FFXIV.Client.Game.Control;
+using FFXIVClientStructs.FFXIV.Client.Game.InstanceContent;
+using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using Lumina.Data.Files;
 using Microsoft.Extensions.DependencyInjection;
@@ -26,20 +30,29 @@ namespace AkuTrack.Windows;
 
 public class MapWindow : Window, IDisposable
 {
+    private readonly record struct ClickedAetheryte(string Name, uint AetheryteId, byte SubIndex, uint GilCost);
+    private readonly record struct TreasureMapSpotInfo(uint RankId, ushort SpotIndex, string RankName, byte TextureId, Vector3 Position);
+
     private readonly Plugin plugin;
     private readonly Configuration configuration;
     private readonly MapStateManager mapStateManager;
     private readonly ObjTrackManager objTrackManager;
     private readonly UploadManager uploadManager;
     private readonly WindowSystem windowSystem;
+    private readonly IFramework framework;
     private readonly IDataManager dataManager;
     private readonly IClientState clientState;
     private readonly IObjectTable objectTable;
+    private readonly IPartyList partyList;
+    private readonly IFateTable fateTable;
+    private readonly IAetheryteList aetheryteList;
     private readonly IPluginLog log;
     private readonly ITextureProvider textureProvider;
     private readonly ITextureSubstitutionProvider textureSubstitutionProvider;
+    private readonly EnpcShopResolver enpcShopResolver;
 
     private float Scale { get; set; } = 1;
+    private const uint FlagTextCommandParamId = 1048;
     public Vector2 DrawOffset { get; set; }
     public HoverFlags HoveredFlags { get; private set; }
     public Vector2 DrawPosition { get; private set; }
@@ -60,6 +73,9 @@ public class MapWindow : Window, IDisposable
     private uint pendingPlacedMarkerFocusMapId;
     private Vector2 pendingPlacedMarkerFocusPosition;
     private int pendingPlacedMarkerFocusFrames;
+    private bool suppressFlagPlacement;
+    private bool pendingFlagFocus;
+    private (uint TerritoryId, uint MapId, float X, float Y)? lastFocusedFlag;
 
     private Vector2 currentMapPixelSize = new(0, 0);
     private Vector2 currentMapScreenPosition = new(0, 0);
@@ -69,6 +85,14 @@ public class MapWindow : Window, IDisposable
     private List<AkuGameObject> clickedObjects = new();
     private List<Lumina.Excel.Sheets.MapMarker> clickedMarkers = new();
     private HashSet<uint>? contentFinderTerritoryIds;
+    private HashSet<uint>? questMapIconIds;
+    private readonly HashSet<int> missingPlacedMapIconIds = new();
+    private readonly HashSet<string> loggedCriticalEngagementMarkers = new();
+    private readonly HashSet<uint> loggedFateIds = new();
+    private readonly HashSet<string> loggedDynamicEventIds = new();
+    private uint treasureMapSpotCacheMap;
+    private List<TreasureMapSpotInfo> treasureMapSpotCache = new();
+    private Vector2 contextMenuMapCoordinate;
 
     private readonly MapContextMenu mapContextMenu = new();
     private readonly TopBar topBar;
@@ -108,9 +132,13 @@ public class MapWindow : Window, IDisposable
         TopBar topBar,
         BottomBar bottomBar,
         WindowSystem windowSystem,
+        IFramework framework,
         IDataManager dataManager,
         IClientState clientState,
         IObjectTable objectTable,
+        IPartyList partyList,
+        IFateTable fateTable,
+        IAetheryteList aetheryteList,
         ITextureProvider textureProvider,
         ITextureSubstitutionProvider textureSubstitutionProvider,
         IPluginLog log
@@ -124,13 +152,18 @@ public class MapWindow : Window, IDisposable
         this.dataManager = dataManager;
         this.clientState = clientState;
         this.objectTable = objectTable;
+        this.partyList = partyList;
+        this.fateTable = fateTable;
+        this.aetheryteList = aetheryteList;
         this.objTrackManager = objTrackManager;
         this.uploadManager = uploadManager;
         this.topBar = topBar;
         this.bottomBar = bottomBar;
         this.windowSystem = windowSystem;
+        this.framework = framework;
         this.textureProvider = textureProvider;
         this.textureSubstitutionProvider = textureSubstitutionProvider;
+        this.enpcShopResolver = new EnpcShopResolver(dataManager, clientState.ClientLanguage);
         this.currentMapBgPath = "";
         this.currentMapFgPath = "";
         SizeConstraints = new WindowSizeConstraints
@@ -141,6 +174,33 @@ public class MapWindow : Window, IDisposable
     }
 
     public void Dispose() { }
+
+    public unsafe void FocusCurrentFlagMarkerIfNeeded()
+    {
+        var agentMap = AgentMap.Instance();
+        if (agentMap == null || agentMap->FlagMarkerCount == 0)
+        {
+            lastFocusedFlag = null;
+            return;
+        }
+
+        var flag = agentMap->FlagMapMarkers[0];
+        var focusedFlag = (flag.TerritoryId, flag.MapId, flag.XFloat, flag.YFloat);
+        if (lastFocusedFlag == focusedFlag)
+        {
+            return;
+        }
+
+        lastFocusedFlag = focusedFlag;
+        pendingFlagFocus = true;
+        keepPlayerCenteredPaused = true;
+    }
+
+    public void FocusCurrentFlagMarkerOnNextDraw()
+    {
+        pendingFlagFocus = true;
+        keepPlayerCenteredPaused = true;
+    }
 
     public unsafe void CaptureSelectedMapFromAgent()
     {
@@ -178,6 +238,7 @@ public class MapWindow : Window, IDisposable
         }
 
         FocusPendingPlacedMapMarker();
+        ProcessPendingFlagFocus();
         UpdateDrawOffset();
 
         HoveredFlags = HoverFlags.Nothing;
@@ -263,7 +324,12 @@ public class MapWindow : Window, IDisposable
 
         DrawAkuObjects();
         DrawMapMarkers();
+        DrawQuestMarkers();
+        DrawTreasureMapSpots();
+        DrawFateMarkers();
+        DrawDynamicEventMarkers();
         DrawPlacedMapMarkers();
+        DrawFlagMarker();
 
         if (!drawPlayerMarkersInBackground)
         {
@@ -416,6 +482,8 @@ public class MapWindow : Window, IDisposable
 
     private void DrawContextMenu()
     {
+        mapContextMenu.Draw(() => PlaceFlagAtMapCoordinate(contextMenuMapCoordinate));
+
         if (clickedObjects.Count > 0 || clickedMarkers.Count > 0)
         {
             DrawAkuObjectContextMenu(clickedObjects, clickedMarkers);
@@ -465,6 +533,40 @@ public class MapWindow : Window, IDisposable
                 DrawPlayerIcon(localPlayer.Position, localPlayer.Rotation);
             }
 
+            DrawPartyMemberIcons();
+        }
+    }
+
+    private void DrawPartyMemberIcons()
+    {
+        if (!configuration.DrawPartyMembers || partyList.Length == 0)
+        {
+            return;
+        }
+
+        foreach (var member in partyList)
+        {
+            if (objectTable.LocalPlayer is { } localPlayer && member.EntityId == localPlayer.GameObjectId)
+            {
+                continue;
+            }
+
+            var memberObject = objectTable.SearchById(member.EntityId);
+            if (memberObject is null || memberObject.ObjectKind != ObjectKind.Pc)
+            {
+                continue;
+            }
+
+            if (!MatchesMapSearch("Party member", member.Name.ToString(), member.ClassJob.RowId.ToString()))
+            {
+                continue;
+            }
+
+            var tint = GetPlayerMarkerTint(member.ClassJob.RowId, new Vector4(0.3f, 0.85f, 1.0f, 1.0f));
+            if (DrawPlayerIcon(memberObject.Position, memberObject.Rotation, tint, 0.75f))
+            {
+                ImGui.SetTooltip($"Party Member: {member.Name}");
+            }
         }
     }
 
@@ -479,7 +581,7 @@ public class MapWindow : Window, IDisposable
                 {
                     continue;
                 }
-                if (!ShouldDrawMapMarker(row.Icon, scope))
+                if (!ShouldDrawMapMarker(row, scope))
                 {
                     continue;
                 }
@@ -525,15 +627,13 @@ public class MapWindow : Window, IDisposable
             return;
         }
 
-        if (agentMap->SelectedMapId != mapStateManager.currentMap.RowId && agentMap->CurrentMapId != mapStateManager.currentMap.RowId)
+        if (agentMap->SelectedMapId == mapStateManager.currentMap.RowId || agentMap->CurrentMapId == mapStateManager.currentMap.RowId)
         {
-            return;
-        }
-
-        for (var i = 0; i < agentMap->TempMapMarkerCount && i < agentMap->TempMapMarkers.Length; i++)
-        {
-            var marker = agentMap->TempMapMarkers[i];
-            DrawPlacedMapMarker(marker);
+            for (var i = 0; i < agentMap->TempMapMarkerCount && i < agentMap->TempMapMarkers.Length; i++)
+            {
+                var marker = agentMap->TempMapMarkers[i];
+                DrawPlacedMapMarker(marker);
+            }
         }
 
         foreach (var marker in agentMap->EventMarkers)
@@ -583,25 +683,609 @@ public class MapWindow : Window, IDisposable
 
     private void DrawEventMapMarker(FFXIVClientStructs.FFXIV.Client.Game.UI.MapMarkerData marker)
     {
-        if (marker.Radius <= 0 ||
-            marker.MapId != mapStateManager.currentMap.RowId ||
+        if (marker.MapId != mapStateManager.currentMap.RowId ||
             marker.TerritoryTypeId != mapStateManager.currentMap.TerritoryType.RowId)
         {
             return;
         }
 
-        DrawPlacedMapMarkerRadius(GetMapCoordinateFor3D(marker.Position), marker.Radius * GetMapScaleFactor());
+        var scope = GetCurrentContentScope();
+        var mapPosition = GetMapPositionForEventMarker(marker);
+        var hasIcon = marker.IconId != 0;
+        var isQuestMarker = hasIcon && IsQuestIcon(marker.IconId);
+        if ((hasIcon || marker.Radius > 0) && ShouldDrawQuestContent(scope))
+        {
+            if (marker.Radius > 0)
+            {
+                DrawPlacedMapMarkerRadius(mapPosition, marker.Radius * GetMapScaleFactor());
+            }
+
+            var iconId = hasIcon ? marker.IconId : 71221;
+            DrawPlacedMapMarkerIcon((int)iconId, mapPosition, "Active quest target");
+            return;
+        }
+    }
+
+    private void DrawCriticalEngagementMarker(Vector2 mapPosition, float radius, int iconId)
+    {
+        if (!IsBoundedBy(mapPosition, Vector2.Zero, new Vector2(2048, 2048)))
+        {
+            var offscreenLogKey = $"{mapStateManager.currentMap.RowId}:{iconId}:offscreen:{MathF.Round(mapPosition.X)}:{MathF.Round(mapPosition.Y)}:{MathF.Round(radius)}";
+            if (loggedCriticalEngagementMarkers.Add(offscreenLogKey))
+            {
+                log.Debug(
+                    "Skipping offscreen critical engagement marker map={MapId} territory={TerritoryId} icon={IconId} mapPosition={MapPosition} radius={Radius}",
+                    mapStateManager.currentMap.RowId,
+                    mapStateManager.currentMap.TerritoryType.RowId,
+                    iconId,
+                    mapPosition,
+                    radius);
+            }
+
+            return;
+        }
+
+        var logKey = $"{mapStateManager.currentMap.RowId}:{iconId}:{MathF.Round(mapPosition.X)}:{MathF.Round(mapPosition.Y)}:{MathF.Round(radius)}";
+        if (loggedCriticalEngagementMarkers.Add(logKey))
+        {
+            log.Debug(
+                "Drawing critical engagement marker map={MapId} territory={TerritoryId} icon={IconId} mapPosition={MapPosition} radius={Radius}",
+                mapStateManager.currentMap.RowId,
+                mapStateManager.currentMap.TerritoryType.RowId,
+                iconId,
+                mapPosition,
+                radius);
+        }
+
+        var drawList = ImGui.GetWindowDrawList();
+        var center = currentMapScreenPosition + DrawPosition + mapPosition * Scale;
+
+        if (radius > 0)
+        {
+            var scaledRadius = radius * GetMapScaleFactor() * Scale;
+            if (scaledRadius > 1.0f)
+            {
+                drawList.AddCircleFilled(center, scaledRadius, ImGui.GetColorU32(new Vector4(0.76f, 0.05f, 0.04f, 0.28f)), 72);
+                drawList.AddCircle(center, scaledRadius, ImGui.GetColorU32(new Vector4(0.86f, 0.05f, 0.04f, 0.82f)), 72, MathF.Max(2.0f, 2.0f * ImGuiHelpers.GlobalScale));
+            }
+        }
+
+        var iconDrawn = false;
+        if (GetPlacedMapMarkerTexture(iconId) is { } texture)
+        {
+            var size = texture.Size / 2.0f;
+            var min = center - size / 2.0f;
+            drawList.AddImage(texture.Handle, min, min + size);
+            iconDrawn = true;
+        }
+
+        if (!iconDrawn)
+        {
+            DrawCriticalEngagementFallbackGlyph(center, false);
+        }
+
+        var hitSize = 28.0f * ImGuiHelpers.GlobalScale;
+        if (IsMouseInsideMapCanvas() && IsBoundedBy(ImGui.GetMousePos(), center - new Vector2(hitSize), center + new Vector2(hitSize)))
+        {
+            ImGui.SetTooltip("Critical engagement");
+        }
+    }
+
+    private Vector2 GetMapPositionForEventMarker(FFXIVClientStructs.FFXIV.Client.Game.UI.MapMarkerData marker)
+    {
+        var candidates = new[]
+        {
+            GetMapCoordinateFor3D(marker.Position),
+            new Vector2(marker.Position.X, marker.Position.Z),
+            new Vector2(marker.Position.X, marker.Position.Y),
+            new Vector2(marker.Position.X / 16.0f, marker.Position.Z / 16.0f),
+            new Vector2(marker.Position.X / 16.0f, marker.Position.Y / 16.0f),
+        };
+
+        return candidates.FirstOrDefault(
+            candidate => IsBoundedBy(candidate, Vector2.Zero, new Vector2(2048, 2048)),
+            candidates[0]);
+    }
+
+    private static void DrawCriticalEngagementFallbackGlyph(Vector2 center, bool overlay)
+    {
+        var drawList = ImGui.GetWindowDrawList();
+        var scale = ImGuiHelpers.GlobalScale;
+        var radius = (overlay ? 9.0f : 13.0f) * scale;
+        var borderColor = ImGui.GetColorU32(new Vector4(0.02f, 0.17f, 0.42f, 0.95f));
+        var fillColor = ImGui.GetColorU32(new Vector4(0.25f, 0.78f, 1.0f, overlay ? 0.55f : 0.95f));
+        var highlightColor = ImGui.GetColorU32(new Vector4(1.0f, 1.0f, 1.0f, 0.88f));
+
+        drawList.AddCircleFilled(center, radius, borderColor, 24);
+        drawList.AddCircleFilled(center, radius * 0.72f, fillColor, 24);
+        drawList.AddLine(center + new Vector2(-radius * 0.45f, 0), center + new Vector2(radius * 0.45f, 0), highlightColor, MathF.Max(1.5f, 1.5f * scale));
+        drawList.AddLine(center + new Vector2(0, -radius * 0.45f), center + new Vector2(0, radius * 0.45f), highlightColor, MathF.Max(1.5f, 1.5f * scale));
+    }
+
+    private unsafe void DrawFlagMarker()
+    {
+        var agentMap = AgentMap.Instance();
+        if (agentMap == null || agentMap->FlagMarkerCount == 0)
+        {
+            return;
+        }
+
+        var flag = agentMap->FlagMapMarkers[0];
+        if (flag.MapId != mapStateManager.currentMap.RowId || flag.TerritoryId != mapStateManager.currentMap.TerritoryType.RowId)
+        {
+            return;
+        }
+
+        if (!MatchesMapSearch("Flag", "Map flag", flag.MapId.ToString(), flag.TerritoryId.ToString()))
+        {
+            return;
+        }
+
+        var position = new Vector3(flag.XFloat, 0, flag.YFloat);
+        var iconId = flag.MapMarker.IconId == 0 ? 60561 : flag.MapMarker.IconId;
+        DrawFlagIcon((int)iconId, position);
+        if (ImGui.IsItemHovered() && IsMouseInsideMapCanvas())
+        {
+            ImGui.SetTooltip($"Flag: {flag.XFloat:F1}, {flag.YFloat:F1}");
+            if (ImGui.IsMouseClicked(ImGuiMouseButton.Left))
+            {
+                ImGui.OpenPopup("AkuTrack_AkuObject_Context_Menu");
+                AddClickedObject(CreateFlagObject(position));
+                AddNearbyElementsToSelection(ImGui.GetMousePos());
+            }
+
+            if (ImGui.IsMouseClicked(ImGuiMouseButton.Right))
+            {
+                agentMap->FlagMarkerCount = 0;
+                lastFocusedFlag = null;
+                suppressFlagPlacement = true;
+            }
+        }
+    }
+
+    private void DrawQuestMarkers()
+    {
+        var scope = GetCurrentContentScope();
+        if (!ShouldDrawQuestContent(scope))
+        {
+            return;
+        }
+
+        foreach (var quest in dataManager.GetExcelSheet<Quest>(clientState.ClientLanguage))
+        {
+            if (quest.RowId == 0 || !quest.IssuerLocation.IsValid)
+            {
+                continue;
+            }
+
+            var level = quest.IssuerLocation.Value;
+            if (level.Map.RowId != mapStateManager.currentMap.RowId || level.X == 0 && level.Z == 0)
+            {
+                continue;
+            }
+
+            var iconId = GetQuestMapIconId(quest);
+            if (iconId == 0 || !configuration.IsIconCategoryEntryEnabled(scope, "Quest", iconId))
+            {
+                continue;
+            }
+
+            var position = new Vector3(level.X, level.Y, level.Z);
+            var name = string.IsNullOrWhiteSpace(quest.Name.ToString()) ? $"Quest #{quest.RowId}" : quest.Name.ToString();
+            if (!MatchesMapSearch("Quest", name, quest.RowId.ToString(), iconId.ToString()))
+            {
+                continue;
+            }
+
+            DrawQuestIcon(iconId, position, name);
+            if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
+            {
+                ImGui.OpenPopup("AkuTrack_AkuObject_Context_Menu");
+                AddClickedObject(CreateSyntheticMapObject("Quest", quest.RowId, name, position));
+                AddNearbyElementsToSelection(ImGui.GetMousePos());
+            }
+        }
+    }
+
+    private void DrawTreasureMapSpots()
+    {
+        var scope = GetCurrentContentScope();
+        if (!ShouldDrawContent("TreasureMaps", scope))
+        {
+            return;
+        }
+
+        foreach (var spot in GetTreasureMapSpotsForCurrentMap())
+        {
+            if (!configuration.IsTreasureMapRankEnabled(spot.RankId) ||
+                !MatchesMapSearch("TreasureMaps", "Treasure map", spot.RankName, spot.RankId.ToString()))
+            {
+                continue;
+            }
+
+            DrawTreasureMapSpot(spot);
+        }
+    }
+
+    private void DrawFateMarkers()
+    {
+        var scope = GetCurrentContentScope();
+        if (!ShouldDrawContent("FATE", scope) && !ShouldDrawContent("CriticalEngagements", scope))
+        {
+            return;
+        }
+
+        foreach (var fate in fateTable)
+        {
+            if (fate is null || !fateTable.IsValid(fate))
+            {
+                continue;
+            }
+
+            if (fate.TerritoryType.RowId != mapStateManager.currentMap.TerritoryType.RowId ||
+                fate.State is not (FateState.Preparing or FateState.Running))
+            {
+                continue;
+            }
+
+            var iconId = GetFateIconId(fate);
+            var isCriticalEngagement = IsCriticalEngagementFate(fate);
+            var contentCategory = isCriticalEngagement ? "CriticalEngagements" : "FATE";
+            if (loggedFateIds.Add(fate.FateId))
+            {
+                log.Debug(
+                    "Live FATE marker fateId={FateId} name={Name} mapIcon={MapIconId} icon={IconId} selectedIcon={SelectedIconId} territory={TerritoryId} state={State}",
+                    fate.FateId,
+                    fate.Name.ToString(),
+                    fate.MapIconId,
+                    fate.IconId,
+                    iconId,
+                    fate.TerritoryType.RowId,
+                    fate.State);
+            }
+
+            if (!ShouldDrawContent(contentCategory, scope))
+            {
+                continue;
+            }
+
+            if (!MatchesMapSearch(contentCategory, fate.Name.ToString(), fate.FateId.ToString(), fate.Level.ToString(), iconId.ToString()))
+            {
+                continue;
+            }
+
+            DrawFateMarker(fate, isCriticalEngagement);
+        }
+    }
+
+    private void DrawFateMarker(IFate fate, bool isCriticalEngagement)
+    {
+        var center = GetMapScreenPosition(fate.Position);
+        var radius = fate.Radius * GetMapScaleFactor() * Scale;
+        var drawList = ImGui.GetWindowDrawList();
+        var radiusFillColor = isCriticalEngagement
+            ? ImGui.GetColorU32(new Vector4(0.76f, 0.05f, 0.04f, 0.28f))
+            : ImGui.GetColorU32(new Vector4(0.35f, 0.2f, 0.75f, 0.12f));
+        var radiusLineColor = isCriticalEngagement
+            ? ImGui.GetColorU32(new Vector4(0.86f, 0.05f, 0.04f, 0.82f))
+            : ImGui.GetColorU32(new Vector4(0.55f, 0.35f, 1.0f, 0.65f));
+
+        if (radius > 1.0f)
+        {
+            drawList.AddCircleFilled(center, radius, radiusFillColor, 48);
+            drawList.AddCircle(center, radius, radiusLineColor, 48, MathF.Max(1.0f, ImGuiHelpers.GlobalScale));
+        }
+
+        var iconId = GetFateIconId(fate);
+        var iconDrawn = false;
+        if (iconId != 0)
+        {
+            try
+            {
+                var texture = textureProvider.GetFromGameIcon(new GameIconLookup(iconId, false)).GetWrapOrEmpty();
+                var size = texture.Size / 2.0f;
+                drawList.AddImage(texture.Handle, center - size / 2.0f, center + size / 2.0f);
+                iconDrawn = true;
+            }
+            catch (Exception ex)
+            {
+                if (missingPlacedMapIconIds.Add((int)iconId))
+                {
+                    log.Warning(ex, "Could not load FATE map icon {IconId}.", iconId);
+                }
+            }
+        }
+
+        if (isCriticalEngagement && !iconDrawn)
+        {
+            DrawCriticalEngagementFallbackGlyph(center, false);
+        }
+
+        var hoverRadius = MathF.Max(14.0f, MathF.Min(radius, 32.0f));
+        if (!IsMouseInsideMapCanvas() || Vector2.Distance(ImGui.GetMousePos(), center) > hoverRadius)
+        {
+            return;
+        }
+
+        var label = isCriticalEngagement ? "Critical engagement" : "FATE";
+        ImGui.SetTooltip($"{label}: {fate.Name}\nLevel: {fate.Level}\nProgress: {fate.Progress}%\nTime: {FormatTimeRemaining(fate.TimeRemaining)}");
+        if (ImGui.IsMouseClicked(ImGuiMouseButton.Left))
+        {
+            ImGui.OpenPopup("AkuTrack_AkuObject_Context_Menu");
+            AddClickedObject(CreateSyntheticMapObject(isCriticalEngagement ? "CEs" : "FATE", fate.FateId, fate.Name.ToString(), fate.Position));
+            AddNearbyElementsToSelection(ImGui.GetMousePos());
+        }
+    }
+
+    private static uint GetFateIconId(IFate fate)
+    {
+        return fate.MapIconId != 0 ? fate.MapIconId : fate.IconId;
+    }
+
+    private static bool IsCriticalEngagementFate(IFate fate)
+    {
+        return IsCriticalEngagementMapIcon(fate.MapIconId) || IsCriticalEngagementMapIcon(fate.IconId);
+    }
+
+    private unsafe void DrawDynamicEventMarkers()
+    {
+        var scope = GetCurrentContentScope();
+        if (!ShouldDrawContent("CriticalEngagements", scope))
+        {
+            return;
+        }
+
+        var container = DynamicEventContainer.GetInstance();
+        if (container == null)
+        {
+            return;
+        }
+
+        var events = container->Events;
+        for (var i = 0; i < events.Length; i++)
+        {
+            ref var dynamicEvent = ref events[i];
+            var marker = dynamicEvent.MapMarker;
+            var logKey = $"{dynamicEvent.DynamicEventId}:{dynamicEvent.State}:{marker.MapId}:{marker.TerritoryTypeId}:{marker.IconId}:{marker.Position}:{marker.Radius}";
+            if (loggedDynamicEventIds.Add(logKey))
+            {
+                log.Debug(
+                    "Dynamic event index={Index} id={DynamicEventId} name={Name} active={Active} state={State} type={Type} progress={Progress} participants={Participants}/{MaxParticipants} markerMap={MarkerMapId} markerTerritory={MarkerTerritoryId} markerIcon={MarkerIconId} markerPosition={MarkerPosition} markerRadius={MarkerRadius}",
+                    i,
+                    dynamicEvent.DynamicEventId,
+                    dynamicEvent.Name.ToString(),
+                    dynamicEvent.IsActive(),
+                    dynamicEvent.State,
+                    dynamicEvent.DynamicEventType,
+                    dynamicEvent.Progress,
+                    dynamicEvent.Participants,
+                    dynamicEvent.MaxParticipants,
+                    marker.MapId,
+                    marker.TerritoryTypeId,
+                    marker.IconId,
+                    marker.Position,
+                    marker.Radius);
+            }
+
+            if (!dynamicEvent.IsActive() ||
+                dynamicEvent.State is DynamicEventState.Inactive ||
+                !MatchesMapSearch("CriticalEngagements", dynamicEvent.Name.ToString(), dynamicEvent.DynamicEventId.ToString(), dynamicEvent.State.ToString()))
+            {
+                continue;
+            }
+
+            if (marker.MapId != 0 && marker.MapId != mapStateManager.currentMap.RowId ||
+                marker.TerritoryTypeId != 0 && marker.TerritoryTypeId != mapStateManager.currentMap.TerritoryType.RowId)
+            {
+                continue;
+            }
+
+            var mapPosition = GetMapPositionForEventMarker(marker);
+            var iconId = marker.IconId != 0 ? (int)marker.IconId : 60852;
+            DrawCriticalEngagementMarker(mapPosition, marker.Radius, iconId);
+
+            if (IsMouseInsideMapCanvas())
+            {
+                var center = currentMapScreenPosition + DrawPosition + mapPosition * Scale;
+                var hoverRadius = MathF.Max(18.0f, MathF.Min(marker.Radius * GetMapScaleFactor() * Scale, 36.0f));
+                if (Vector2.Distance(ImGui.GetMousePos(), center) <= hoverRadius)
+                {
+                    ImGui.SetTooltip(
+                        $"Critical engagement: {dynamicEvent.Name}\n" +
+                        $"State: {dynamicEvent.State}\n" +
+                        $"Progress: {dynamicEvent.Progress}%\n" +
+                        $"Participants: {dynamicEvent.Participants}/{dynamicEvent.MaxParticipants}\n" +
+                        $"Time: {FormatTimeRemaining(dynamicEvent.SecondsLeft)}");
+                }
+            }
+        }
+    }
+
+    private IReadOnlyList<TreasureMapSpotInfo> GetTreasureMapSpotsForCurrentMap()
+    {
+        if (treasureMapSpotCacheMap == mapStateManager.currentMap.RowId)
+        {
+            return treasureMapSpotCache;
+        }
+
+        treasureMapSpotCacheMap = mapStateManager.currentMap.RowId;
+        treasureMapSpotCache = new List<TreasureMapSpotInfo>();
+
+        var spots = dataManager.GetSubrowExcelSheet<TreasureSpot>();
+        foreach (var rank in dataManager.GetExcelSheet<TreasureHuntRank>(clientState.ClientLanguage))
+        {
+            if (rank.RowId == 0 || rank.Icon == 0 || !rank.ItemName.IsValid || !spots.HasRow(rank.RowId))
+            {
+                continue;
+            }
+
+            var rankName = rank.ItemName.Value.Name.ToString();
+            if (string.IsNullOrWhiteSpace(rankName))
+            {
+                continue;
+            }
+
+            foreach (var spot in spots.GetRow(rank.RowId))
+            {
+                if (!spot.Location.IsValid)
+                {
+                    continue;
+                }
+
+                var level = spot.Location.Value;
+                if (level.Map.RowId != mapStateManager.currentMap.RowId || level.X == 0 && level.Z == 0)
+                {
+                    continue;
+                }
+
+                treasureMapSpotCache.Add(new TreasureMapSpotInfo(
+                    rank.RowId,
+                    spot.SubrowId,
+                    rankName,
+                    rank.TreasureHuntTexture,
+                    new Vector3(level.X, level.Y, level.Z)));
+            }
+        }
+
+        return treasureMapSpotCache;
+    }
+
+    private void DrawTreasureMapSpot(TreasureMapSpotInfo spot)
+    {
+        var center = GetMapScreenPosition(spot.Position);
+        var drawList = ImGui.GetWindowDrawList();
+        var texture = textureProvider.GetFromGame(GetTreasureMapTexturePath(spot.TextureId)).GetWrapOrEmpty();
+
+        var size = new Vector2(220.0f, 200.0f) * Scale;
+        var min = center - size / 2.0f;
+        var max = center + size / 2.0f;
+
+        var baseUv0 = Vector2.Zero;
+        var baseUv1 = new Vector2(2.0f / 5.0f, 1.0f);
+        drawList.AddImage(texture.Handle, min, max, baseUv0, baseUv1);
+
+        var xSourceSize = texture.Size.Y / 6.0f;
+        var xCenter = new Vector2(
+            texture.Size.X * (14.0f / 15.0f) + xSourceSize * 0.12f,
+            texture.Size.Y * (3.0f / 5.0f) - xSourceSize * 0.18f
+        );
+        var xSourceMin = xCenter - new Vector2(xSourceSize / 2.0f, xSourceSize / 2.0f);
+        var xSourceMax = xCenter + new Vector2(xSourceSize / 2.0f, xSourceSize / 2.0f);
+
+        var xRenderSize = new Vector2(size.X * 0.22f, size.X * 0.22f);
+        var xMin = center - xRenderSize / 2.0f;
+        var xMax = center + xRenderSize / 2.0f;
+        drawList.AddImage(texture.Handle, xMin, xMax, xSourceMin / texture.Size, xSourceMax / texture.Size);
+
+        if (IsMouseInsideMapCanvas() && IsBoundedBy(ImGui.GetMousePos(), min, max))
+        {
+            ImGui.SetTooltip($"{spot.RankName}\nTreasure map spot: {spot.Position.X:F1}, {spot.Position.Z:F1}");
+            if (ImGui.IsMouseClicked(ImGuiMouseButton.Left))
+            {
+                ImGui.OpenPopup("AkuTrack_AkuObject_Context_Menu");
+                AddClickedObject(CreateTreasureMapSpotObject(spot));
+                AddNearbyElementsToSelection(ImGui.GetMousePos());
+            }
+        }
+    }
+
+    private AkuGameObject CreateTreasureMapSpotObject(TreasureMapSpotInfo spot)
+    {
+        return CreateSyntheticMapObject("TreasureMaps", spot.RankId, spot.RankName, spot.Position);
+    }
+
+    private static string GetTreasureMapTexturePath(byte textureId)
+    {
+        return textureId switch
+        {
+            1 => "ui/uld/treasuremap_relic_hr1.tex",
+            2 => "ui/uld/treasuremap_seasonal_hr1.tex",
+            4 => "ui/uld/treasuremap_undersea_hr1.tex",
+            _ => "ui/uld/treasuremap_hr1.tex",
+        };
     }
 
     private void DrawPlacedMapMarkerIcon(int iconId, Vector2 mapPosition, string tooltip)
     {
-        var texture = textureProvider.GetFromGameIcon(iconId).GetWrapOrEmpty();
+        var texture = GetPlacedMapMarkerTexture(iconId);
+        if (texture is null)
+        {
+            return;
+        }
+
         var size = texture.Size / 2.0f;
         var p = mapPosition * Scale + DrawPosition - size / 2.0f;
 
         ImGui.SetCursorPos(p);
         ImGui.Image(texture.Handle, size);
         if (ImGui.IsItemHovered() && IsMouseInsideMapCanvas() && !string.IsNullOrWhiteSpace(tooltip))
+        {
+            ImGui.SetTooltip(tooltip);
+        }
+    }
+
+    private IDalamudTextureWrap? GetPlacedMapMarkerTexture(int iconId)
+    {
+        try
+        {
+            return textureProvider.GetFromGameIcon(new GameIconLookup((uint)iconId, false)).GetWrapOrEmpty();
+        }
+        catch (Exception ex)
+        {
+            if (missingPlacedMapIconIds.Add(iconId))
+            {
+                log.Warning(ex, "Could not load placed map marker icon {IconId}; falling back to generic critical engagement marker.", iconId);
+            }
+        }
+
+        try
+        {
+            return textureProvider.GetFromGameIcon(new GameIconLookup(60852, false)).GetWrapOrEmpty();
+        }
+        catch (Exception ex)
+        {
+            if (missingPlacedMapIconIds.Add(60852))
+            {
+                log.Warning(ex, "Could not load fallback critical engagement map marker icon.");
+            }
+
+            return null;
+        }
+    }
+
+    private void DrawFlagIcon(int iconId, Vector3 position)
+    {
+        var texture = textureProvider.GetFromGameIcon(iconId).GetWrapOrEmpty();
+        var size = texture.Size / 2.0f;
+        var p = GetMapCoordinateFor3D(position) * Scale + DrawPosition - size / 2.0f;
+
+        if (configuration.DrawDebugSquares)
+        {
+            ImGui.SetCursorPos(p);
+            var cursorPos = ImGui.GetCursorScreenPos();
+            ImGui.GetWindowDrawList().AddRect(cursorPos, cursorPos + size, ImGui.GetColorU32(configuration.TextColor), 3.0f);
+        }
+
+        ImGui.SetCursorPos(p);
+        ImGui.Image(texture.Handle, size);
+    }
+
+    private void DrawQuestIcon(uint iconId, Vector3 position, string tooltip)
+    {
+        var texture = textureProvider.GetFromGameIcon((int)iconId).GetWrapOrEmpty();
+        var size = texture.Size / 2.0f;
+        var p = GetMapCoordinateFor3D(position) * Scale + DrawPosition - size / 2.0f;
+
+        if (configuration.DrawDebugSquares)
+        {
+            ImGui.SetCursorPos(p);
+            var cursorPos = ImGui.GetCursorScreenPos();
+            ImGui.GetWindowDrawList().AddRect(cursorPos, cursorPos + size, ImGui.GetColorU32(configuration.TextColor), 3.0f);
+        }
+
+        ImGui.SetCursorPos(p);
+        ImGui.Image(texture.Handle, size);
+        if (ImGui.IsItemHovered() && IsMouseInsideMapCanvas())
         {
             ImGui.SetTooltip(tooltip);
         }
@@ -706,11 +1390,44 @@ public class MapWindow : Window, IDisposable
                 return;
         }
         var handledClickAndHover = false;
-        if (obj.objectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventNpc)
+        if (obj.t == "Quest")
+        {
+            if (!configuration.IsObjectSourceEnabled(scope, "Quest", source) || !ShouldDrawQuestContent(scope))
+            {
+                return;
+            }
+
+            var iconId = GetDownloadedQuestMapIconId(obj.bid);
+            if (!configuration.IsIconCategoryEntryEnabled(scope, "Quest", iconId))
+            {
+                return;
+            }
+
+            DrawIcon((int)iconId, obj);
+        }
+        else if (IsCriticalEngagementObject(obj))
+        {
+            if (!ShouldDrawContent("CriticalEngagements", scope))
+            {
+                return;
+            }
+
+            DrawIcon(60852, obj);
+        }
+        else if (string.Equals(obj.t, "FATE", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!ShouldDrawContent("FATE", scope))
+            {
+                return;
+            }
+
+            DrawIcon(60501, obj);
+        }
+        else if (obj.objectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventNpc)
         {
             if (ShouldHideDownloadedNpcWithoutUniqueIngameId(obj, source))
                 return;
-            DrawIcon((int)IconIds.EventNpc, obj);
+            DrawIcon(enpcShopResolver.GetPreferredMapIconId(obj.bid), obj);
         }
         else if (obj.objectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventObj)
         {
@@ -760,7 +1477,15 @@ public class MapWindow : Window, IDisposable
         else if (obj.objectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Treasure)
             DrawIcon((int)IconIds.Treasure, obj);
         else if (obj.objectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Pc)
+        {
+            var isPartyMember = IsPartyMember(obj);
+            if (isPartyMember || !configuration.DrawOtherPlayers)
+            {
+                return;
+            }
+
             handledClickAndHover = DrawActorDot(obj);
+        }
         else if (obj.objectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Companion)
             handledClickAndHover = DrawActorDot(obj);
         else if (obj.objectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Mount)
@@ -799,7 +1524,7 @@ public class MapWindow : Window, IDisposable
             return objectKind switch
             {
                 Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Aetheryte => true,
-                Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Pc => configuration.DrawOtherPlayers,
+                Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Pc => configuration.DrawOtherPlayers || configuration.DrawPartyMembers,
                 Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Companion => configuration.DrawOtherPlayers,
                 Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Mount => configuration.DrawOtherPlayers,
                 _ => true,
@@ -829,6 +1554,19 @@ public class MapWindow : Window, IDisposable
             && (obj.objectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventNpc ||
                 obj.objectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.BattleNpc)
             && obj.unique_ingame_id is null;
+    }
+
+    private static bool IsCriticalEngagementObject(AkuGameObject obj)
+    {
+        return obj.t.Equals("CEs", StringComparison.OrdinalIgnoreCase) ||
+            obj.t.Equals("CE", StringComparison.OrdinalIgnoreCase) ||
+            obj.t.Equals("CriticalEngagement", StringComparison.OrdinalIgnoreCase) ||
+            obj.t.Equals("CriticalEngagements", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsCriticalEngagementMapIcon(uint iconId)
+    {
+        return iconId is 60852 or 60958;
     }
 
     private MapContentScope GetCurrentContentScope()
@@ -866,6 +1604,7 @@ public class MapWindow : Window, IDisposable
                 "MapMarkerLabelsOnly" => configuration.DrawMapMarkerLabelsOnly,
                 "MapMarkersWithIcons" => configuration.DrawMapMarkersWithIcons,
                 "RemoteMarker" => configuration.DrawRemoteMarker,
+                "Quest" => configuration.DrawQuestMarkers,
                 "SightseeingLog" => configuration.DrawSightseeingLogEntries,
                 "Treasure" => configuration.DrawTreasure,
                 "TreasureMaps" => configuration.DrawTreasureMaps,
@@ -883,6 +1622,7 @@ public class MapWindow : Window, IDisposable
                 "MapMarkerLabelsOnly" => configuration.DrawContentFinderMapMarkerLabelsOnly,
                 "MapMarkersWithIcons" => configuration.DrawContentFinderMapMarkersWithIcons,
                 "RemoteMarker" => configuration.DrawContentFinderRemoteMarker,
+                "Quest" => configuration.DrawContentFinderQuestMarkers,
                 "SightseeingLog" => configuration.DrawContentFinderSightseeingLogEntries,
                 "Treasure" => configuration.DrawContentFinderTreasure,
                 "TreasureMaps" => configuration.DrawContentFinderTreasureMaps,
@@ -892,10 +1632,46 @@ public class MapWindow : Window, IDisposable
         };
     }
 
-    private bool ShouldDrawMapMarker(uint iconId, MapContentScope scope)
+    private bool ShouldDrawMapMarker(Lumina.Excel.Sheets.MapMarker marker, MapContentScope scope)
     {
-        var category = IsRegionIcon((int)iconId) ? "MapMarkerLabelsOnly" : "MapMarkersWithIcons";
+        if (IsQuestMapMarker(marker))
+        {
+            return ShouldDrawQuestContent(scope);
+        }
+
+        var category = IsRegionIcon((int)marker.Icon) ? "MapMarkerLabelsOnly" : "MapMarkersWithIcons";
         return ShouldDrawContent(category, scope);
+    }
+
+    private bool IsQuestMapMarker(Lumina.Excel.Sheets.MapMarker marker)
+    {
+        return marker.DataKey.TryGetValue<Quest>(out _) || IsQuestIcon(marker.Icon);
+    }
+
+    private bool ShouldDrawQuestContent(MapContentScope scope)
+    {
+        return ShouldDrawContent("Quest", scope) ||
+            configuration.DrawQuestMarkers ||
+            configuration.DrawContentFinderQuestMarkers;
+    }
+
+    private bool IsQuestIcon(uint iconId)
+    {
+        if (questMapIconIds is null)
+        {
+            questMapIconIds = dataManager.GetExcelSheet<Quest>()
+                .Where(row => row.RowId != 0)
+                .Select(GetQuestMapIconId)
+                .Where(id => id != 0)
+                .ToHashSet();
+        }
+
+        return questMapIconIds.Contains(iconId) || IsKnownQuestIconRange(iconId);
+    }
+
+    private static bool IsKnownQuestIconRange(uint iconId)
+    {
+        return iconId is >= 71200 and <= 71399 or >= 62500 and <= 62599;
     }
 
     private static uint GetEventObjIconId(uint baseId)
@@ -908,6 +1684,42 @@ public class MapWindow : Window, IDisposable
             2007457 => 60033,
             _ => (uint)IconIds.EventObj,
         };
+    }
+
+    private static uint GetQuestMapIconId(Quest quest)
+    {
+        if (quest.EventIconType.IsValid)
+        {
+            var eventIconType = quest.EventIconType.Value;
+            var iconId = eventIconType.RowId switch
+            {
+                1 => 71221u,
+                3 => 71201u,
+                4 => 71222u,
+                8 or 10 => 71341u,
+                33 => 62521u,
+                34 => 62523u,
+                _ => 0u,
+            };
+            if (iconId != 0)
+            {
+                return iconId;
+            }
+
+            if (eventIconType.MapIconAvailable != 0)
+            {
+                return eventIconType.MapIconAvailable;
+            }
+        }
+
+        return quest.Icon != 0 ? quest.Icon : 71221;
+    }
+
+    private uint GetDownloadedQuestMapIconId(uint questId)
+    {
+        return dataManager.GetExcelSheet<Quest>(clientState.ClientLanguage).TryGetRow(questId, out var quest)
+            ? GetQuestMapIconId(quest)
+            : 71221;
     }
 
     private bool IsLocalPlayerObject(AkuGameObject obj)
@@ -924,6 +1736,14 @@ public class MapWindow : Window, IDisposable
 
         foreach (var obj in objs)
         {
+            foreach (var aetheryte in GetTeleportOptionsForObject(obj))
+            {
+                if (ImGui.MenuItem($"Teleport {aetheryte.Name} ({aetheryte.GilCost} gil)##teleport_obj_{aetheryte.AetheryteId}_{aetheryte.SubIndex}"))
+                {
+                    TeleportToAetheryte(aetheryte);
+                }
+            }
+
             if (obj.objectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Mount)
             {
                 var name = dataManager.GetExcelSheet<Mount>().First(x => x.ModelChara.RowId == obj.moid).Singular.ToString();
@@ -960,6 +1780,14 @@ public class MapWindow : Window, IDisposable
             
         }
         foreach(var mark in markers) {
+            foreach (var aetheryte in GetTeleportOptionsForMapMarker(mark))
+            {
+                if (ImGui.MenuItem($"Teleport {aetheryte.Name} ({aetheryte.GilCost} gil)##teleport_{aetheryte.AetheryteId}_{aetheryte.SubIndex}"))
+                {
+                    TeleportToAetheryte(aetheryte);
+                }
+            }
+
             if(ImGui.MenuItem($"MapMarker ({mark.RowId}.{mark.SubrowId}) {mark.PlaceNameSubtext.Value.Name.ToString()}")) {
                 if (mark.DataKey.TryGetValue<Lumina.Excel.Sheets.Map>(out var dataKeyMap))
                 {
@@ -970,6 +1798,74 @@ public class MapWindow : Window, IDisposable
                 }
             }
         }
+    }
+
+    private IEnumerable<ClickedAetheryte> GetTeleportOptionsForObject(AkuGameObject obj)
+    {
+        if (obj.objectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Aetheryte ||
+            !dataManager.GetExcelSheet<Lumina.Excel.Sheets.Aetheryte>().TryGetRow(obj.bid, out var objectAetheryte))
+        {
+            yield break;
+        }
+
+        foreach (var aetheryte in aetheryteList)
+        {
+            if (aetheryte.TerritoryId != mapStateManager.currentMap.TerritoryType.RowId)
+            {
+                continue;
+            }
+
+            var data = aetheryte.AetheryteData.Value;
+            if (!data.IsAetheryte || data.Invisible)
+            {
+                continue;
+            }
+
+            if (data.RowId != objectAetheryte.RowId && data.PlaceName.RowId != objectAetheryte.PlaceName.RowId)
+            {
+                continue;
+            }
+
+            yield return new ClickedAetheryte(
+                data.PlaceName.Value.Name.ToString(),
+                aetheryte.AetheryteId,
+                aetheryte.SubIndex,
+                aetheryte.GilCost);
+        }
+    }
+
+    private IEnumerable<ClickedAetheryte> GetTeleportOptionsForMapMarker(Lumina.Excel.Sheets.MapMarker marker)
+    {
+        var placeNameSubtextId = marker.PlaceNameSubtext.RowId;
+        if (placeNameSubtextId == 0)
+        {
+            yield break;
+        }
+
+        foreach (var aetheryte in aetheryteList)
+        {
+            if (aetheryte.TerritoryId != mapStateManager.currentMap.TerritoryType.RowId)
+            {
+                continue;
+            }
+
+            var data = aetheryte.AetheryteData.Value;
+            if (!data.IsAetheryte || data.Invisible || data.PlaceName.RowId != placeNameSubtextId)
+            {
+                continue;
+            }
+
+            yield return new ClickedAetheryte(
+                data.PlaceName.Value.Name.ToString(),
+                aetheryte.AetheryteId,
+                aetheryte.SubIndex,
+                aetheryte.GilCost);
+        }
+    }
+
+    private static unsafe void TeleportToAetheryte(ClickedAetheryte aetheryte)
+    {
+        Telepo.Instance()->Teleport(aetheryte.AetheryteId, aetheryte.SubIndex);
     }
 
     private void DrawIcon(int iconid, AkuGameObject obj)
@@ -1063,6 +1959,7 @@ public class MapWindow : Window, IDisposable
         }
 
         AddNearbyMapMarkersToSelection(screenPosition, selectionRadius, scope);
+        AddNearbyTreasureMapSpotsToSelection(screenPosition, selectionRadius, scope);
     }
 
     private bool IsObjectSelectableNear(AkuGameObject obj, MapObjectSource source, MapContentScope scope, Vector2 screenPosition, float selectionRadius)
@@ -1081,7 +1978,7 @@ public class MapWindow : Window, IDisposable
             var rows = dataManager.GetSubrowExcelSheet<Lumina.Excel.Sheets.MapMarker>().GetRow(mapStateManager.currentMap.MapMarkerRange);
             foreach (var row in rows)
             {
-                if (row.X == 0 && row.Y == 0 || !ShouldDrawMapMarker(row.Icon, scope) || !MatchesMapSearch(row))
+                if (row.X == 0 && row.Y == 0 || !ShouldDrawMapMarker(row, scope) || !MatchesMapSearch(row))
                 {
                     continue;
                 }
@@ -1095,6 +1992,31 @@ public class MapWindow : Window, IDisposable
         }
         catch (ArgumentOutOfRangeException)
         {
+        }
+    }
+
+    private void AddNearbyTreasureMapSpotsToSelection(Vector2 screenPosition, float selectionRadius, MapContentScope scope)
+    {
+        if (!ShouldDrawContent("TreasureMaps", scope))
+        {
+            return;
+        }
+
+        foreach (var spot in GetTreasureMapSpotsForCurrentMap())
+        {
+            if (!configuration.IsTreasureMapRankEnabled(spot.RankId) ||
+                !MatchesMapSearch("TreasureMaps", "Treasure map", spot.RankName, spot.RankId.ToString()))
+            {
+                continue;
+            }
+
+            var size = new Vector2(220.0f, 200.0f) * Scale;
+            var center = GetMapScreenPosition(spot.Position);
+            var insideSpot = IsBoundedBy(screenPosition, center - size / 2.0f, center + size / 2.0f);
+            if (insideSpot || Vector2.Distance(screenPosition, center) <= selectionRadius)
+            {
+                AddClickedObject(CreateTreasureMapSpotObject(spot));
+            }
         }
     }
 
@@ -1124,6 +2046,34 @@ public class MapWindow : Window, IDisposable
         clickedMarkers.Add(marker);
     }
 
+    private AkuGameObject CreateFlagObject(Vector3 position)
+    {
+        return CreateSyntheticMapObject("Flag", mapStateManager.currentMap.RowId, "Flag", position);
+    }
+
+    private AkuGameObject CreateSyntheticMapObject(string type, uint baseId, string name, Vector3 position)
+    {
+        return new AkuGameObject(new DownloadGameObject
+        {
+            created_at = DateTimeOffset.Now,
+            last_seen_at = DateTimeOffset.Now,
+            objecttype = nameof(ObjectKind.None),
+            zone_id = mapStateManager.currentMap.TerritoryType.RowId,
+            map_id = mapStateManager.currentMap.RowId,
+            base_id = baseId,
+            x = position.X,
+            y = position.Y,
+            z = position.Z,
+            rotation = 0,
+            uuid = $"{type}:{mapStateManager.currentMap.RowId}:{baseId}:{position.X:F2}:{position.Z:F2}",
+        })
+        {
+            syntheticType = type,
+            name = name,
+            isDownloaded = false,
+        };
+    }
+
     private bool MatchesMapSearch(AkuGameObject obj)
     {
         if (!mapStateManager.filterEnabled || mapStateManager.filterExpression == string.Empty)
@@ -1143,6 +2093,19 @@ public class MapWindow : Window, IDisposable
         return !mapStateManager.filterEnabled ||
             mapStateManager.filterExpression == string.Empty ||
             marker.PlaceNameSubtext.Value.Name.ToString().Contains(mapStateManager.filterExpression, StringComparison.CurrentCultureIgnoreCase);
+    }
+
+    private bool MatchesMapSearch(params string[] values)
+    {
+        return !mapStateManager.filterEnabled ||
+            mapStateManager.filterExpression == string.Empty ||
+            values.Any(value => value.Contains(mapStateManager.filterExpression, StringComparison.CurrentCultureIgnoreCase));
+    }
+
+    private static string FormatTimeRemaining(long seconds)
+    {
+        seconds = Math.Max(0, seconds);
+        return $"{seconds / 60}:{seconds % 60:00}";
     }
 
     private Vector2 GetMapScreenPosition(Vector3 position)
@@ -1180,6 +2143,46 @@ public class MapWindow : Window, IDisposable
 
         return objectTable.SearchById(gameObjectId) is ICharacter character &&
             character.StatusFlags.HasFlag(StatusFlags.Friend);
+    }
+
+    private bool IsPartyMember(AkuGameObject obj)
+    {
+        if (obj.unique_ingame_id is not { } gameObjectId || partyList.Length == 0)
+        {
+            return false;
+        }
+
+        return partyList.Any(member => member.EntityId == gameObjectId);
+    }
+
+    private Vector4 GetPlayerMarkerTint(uint classJobId, Vector4 fallback)
+    {
+        if (!configuration.ColorPlayerMarkersByClass)
+        {
+            return fallback;
+        }
+
+        if (!dataManager.GetExcelSheet<Lumina.Excel.Sheets.ClassJob>().TryGetRow(classJobId, out var classJob))
+        {
+            return fallback;
+        }
+
+        return classJob.JobType switch
+        {
+            1 => new Vector4(0.25f, 0.48f, 1.0f, 1.0f),
+            2 or 6 => new Vector4(0.25f, 0.95f, 0.45f, 1.0f),
+            3 or 4 or 5 => new Vector4(1.0f, 0.05f, 0.05f, 1.0f),
+            _ when IsClassJobCategory(classJob, "Disciple of the Hand") => new Vector4(0.95f, 0.75f, 0.25f, 1.0f),
+            _ when IsClassJobCategory(classJob, "Disciple of the Land") => new Vector4(0.35f, 0.9f, 0.85f, 1.0f),
+            _ => fallback,
+        };
+    }
+
+    private bool IsClassJobCategory(Lumina.Excel.Sheets.ClassJob classJob, string englishCategoryName)
+    {
+        return dataManager.GetExcelSheet<Lumina.Excel.Sheets.ClassJobCategory>(ClientLanguage.English)
+            .TryGetRow(classJob.ClassJobCategory.RowId, out var category)
+            && category.Name.ToString() == englishCategoryName;
     }
 
     private void DrawMapIcon(int iconid, Vector2 position, float rotation, string text, byte subtextOrientation)
@@ -1255,25 +2258,42 @@ public class MapWindow : Window, IDisposable
         return false;
     }
 
-    private void DrawPlayerIcon(Vector3 pos, float rotation)
+    private bool DrawPlayerIcon(Vector3 pos, float rotation)
+    {
+        return DrawPlayerIcon(pos, rotation, Vector4.One, 1.0f);
+    }
+
+    private bool DrawPlayerIcon(Vector3 pos, float rotation, Vector4 tint, float iconScale)
     {
         var texture = textureProvider.GetFromGameIcon(60443).GetWrapOrEmpty();
         var angle = -rotation + MathF.PI / 2.0f;
-        var scaledSize = texture.Size / 2.0f * Scale;
-        var minimumSize = new Vector2(36.0f * ImGuiHelpers.GlobalScale);
-        var maximumSize = new Vector2(96.0f * ImGuiHelpers.GlobalScale);
+        var scaledSize = texture.Size / 2.0f * Scale * iconScale;
+        var minimumSize = new Vector2(36.0f * ImGuiHelpers.GlobalScale * iconScale);
+        var maximumSize = new Vector2(96.0f * ImGuiHelpers.GlobalScale * iconScale);
         var size = Vector2.Clamp(scaledSize, minimumSize, maximumSize);
 
-        var p = ImGui.GetWindowPos() +
-                           DrawPosition +
-                           (GetPlayerMapPosition(pos) +
-                            GetMapOffsetVector() +
-                            GetMapCenterOffsetVector()) * Scale;
+        var p = currentMapScreenPosition +
+                DrawPosition +
+                (GetPlayerMapPosition(pos) +
+                 GetMapOffsetVector() +
+                 GetMapCenterOffsetVector()) * Scale;
         //var p = ((GetMapCoordinateFor3D(pos)) * Scale) + DrawPosition - (texture.Size / 4.0f * Scale);
         var vectors = GetRotationVectors(angle, p, size);
 
         //log.Debug($"@ {position} Drawing to {p} with scale {Scale} DrawPosition: {DrawPosition}");
-        ImGui.GetWindowDrawList().AddImageQuad(texture.Handle, vectors[0], vectors[1], vectors[2], vectors[3]);
+        ImGui.GetWindowDrawList().AddImageQuad(
+            texture.Handle,
+            vectors[0],
+            vectors[1],
+            vectors[2],
+            vectors[3],
+            Vector2.Zero,
+            new Vector2(1, 0),
+            Vector2.One,
+            new Vector2(0, 1),
+            ImGui.GetColorU32(tint));
+
+        return IsMouseInsideMapCanvas() && IsBoundedBy(ImGui.GetMousePos(), p - size / 2.0f, p + size / 2.0f);
     }
 
     private unsafe void DrawCameraCone(Vector3 pos)
@@ -1325,6 +2345,7 @@ public class MapWindow : Window, IDisposable
             else
             {
                 ProcessMouseScroll();
+                ProcessMapFlagClick();
                 ProcessMapDragStart();
                 Flags |= ImGuiWindowFlags.NoMove;
             }
@@ -1344,6 +2365,65 @@ public class MapWindow : Window, IDisposable
 
         Scale += ZoomSpeed * ImGui.GetIO().MouseWheel;
         Scale = Math.Clamp(Scale, 0.25f, 100.0f);
+    }
+
+    private unsafe void ProcessMapFlagClick()
+    {
+        if (suppressFlagPlacement)
+        {
+            suppressFlagPlacement = false;
+            return;
+        }
+
+        if (!HoveredFlags.HasFlag(HoverFlags.MapTexture)) return;
+        if (!ImGui.IsMouseClicked(ImGuiMouseButton.Right)) return;
+
+        if (TryClearFlagAtMousePosition())
+        {
+            return;
+        }
+
+        var mapCoordinate = GetMouseMapCoordinate();
+        if (ImGui.GetIO().KeyCtrl)
+        {
+            PlaceFlagAtMapCoordinate(mapCoordinate);
+            return;
+        }
+
+        if (IsBoundedBy(mapCoordinate, Vector2.Zero, new Vector2(2048, 2048)))
+        {
+            contextMenuMapCoordinate = mapCoordinate;
+            ImGui.OpenPopup("AkuTrack_Context_Menu");
+        }
+    }
+
+    private unsafe bool TryClearFlagAtMousePosition()
+    {
+        var agentMap = AgentMap.Instance();
+        if (agentMap == null || agentMap->FlagMarkerCount == 0)
+        {
+            return false;
+        }
+
+        var flag = agentMap->FlagMapMarkers[0];
+        if (flag.MapId != mapStateManager.currentMap.RowId ||
+            flag.TerritoryId != mapStateManager.currentMap.TerritoryType.RowId)
+        {
+            return false;
+        }
+
+        var flagPosition = new Vector3(flag.XFloat, 0, flag.YFloat);
+        var flagScreenPosition = GetMapScreenPosition(flagPosition);
+        var hitRadius = MathF.Max(18.0f, 18.0f * ImGuiHelpers.GlobalScale);
+        if (Vector2.Distance(ImGui.GetMousePos(), flagScreenPosition) > hitRadius)
+        {
+            return false;
+        }
+
+        agentMap->FlagMarkerCount = 0;
+        lastFocusedFlag = null;
+        suppressFlagPlacement = true;
+        return true;
     }
 
     private void ProcessMapDragStart()
@@ -1400,6 +2480,59 @@ public class MapWindow : Window, IDisposable
         DrawOffset = -(GetPlayerMapPosition(localPlayer.Position) + GetMapOffsetVector());
     }
 
+    private void CenterOnWorldPosition(Vector3 position)
+    {
+        DrawOffset = GetMapCenterOffsetVector() - GetMapCoordinateFor3D(position);
+    }
+
+    private unsafe void ProcessPendingFlagFocus()
+    {
+        if (!pendingFlagFocus)
+        {
+            return;
+        }
+
+        var agentMap = AgentMap.Instance();
+        if (agentMap == null || agentMap->FlagMarkerCount == 0)
+        {
+            pendingFlagFocus = false;
+            return;
+        }
+
+        var flag = agentMap->FlagMapMarkers[0];
+        if (flag.MapId != mapStateManager.currentMap.RowId || flag.TerritoryId != mapStateManager.currentMap.TerritoryType.RowId)
+        {
+            return;
+        }
+
+        keepPlayerCenteredPaused = true;
+        CenterOnWorldPosition(new Vector3(flag.XFloat, 0, flag.YFloat));
+        pendingFlagFocus = false;
+    }
+
+    private unsafe void PlaceFlagAtMapCoordinate(Vector2 mapCoordinate)
+    {
+        if (!IsBoundedBy(mapCoordinate, Vector2.Zero, new Vector2(2048, 2048)))
+        {
+            return;
+        }
+
+        var agentMap = AgentMap.Instance();
+        if (agentMap == null)
+        {
+            return;
+        }
+
+        agentMap->SetFlagMapMarker(
+            mapStateManager.currentMap.TerritoryType.RowId,
+            mapStateManager.currentMap.RowId,
+            GetWorldPositionForCurrentMapCoordinate(mapCoordinate));
+
+        var flag = agentMap->FlagMapMarkers[0];
+        lastFocusedFlag = (flag.TerritoryId, flag.MapId, flag.XFloat, flag.YFloat);
+        framework.RunOnTick(() => AgentChatLog.Instance()->InsertTextCommandParam(FlagTextCommandParamId, false));
+    }
+
     private string FormatPlayerMapPosition(Vector3 worldPosition)
     {
         var mapPosition = TexturePixelToIngameCoord(GetMapCoordinateFor3D(worldPosition));
@@ -1454,6 +2587,12 @@ public class MapWindow : Window, IDisposable
         var rawMapOffset = new Vector2(agentMap->SelectedOffsetX, agentMap->SelectedOffsetY);
         var mapScaleFactor = agentMap->SelectedMapSizeFactorFloat;
         var twoD = ((mapCoordinate - GetMapCenterOffsetVector()) / mapScaleFactor) - rawMapOffset;
+        return new Vector3(twoD.X, 0, twoD.Y);
+    }
+
+    private Vector3 GetWorldPositionForCurrentMapCoordinate(Vector2 mapCoordinate)
+    {
+        var twoD = ((mapCoordinate - GetMapCenterOffsetVector()) / GetMapScaleFactor()) - GetRawMapOffsetVector();
         return new Vector3(twoD.X, 0, twoD.Y);
     }
 

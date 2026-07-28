@@ -136,6 +136,7 @@ public class ConfigWindow : Window, IDisposable
             DrawCheckbox("Show FATEs", GetContentToggle(scope, "FATE"), value => SetContentToggle(scope, "FATE", value));
             DrawCheckbox("Show map markers with icons and labels", GetContentToggle(scope, "MapMarkersWithIcons"), value => SetContentToggle(scope, "MapMarkersWithIcons", value));
             DrawCheckbox("Show map markers with labels only", GetContentToggle(scope, "MapMarkerLabelsOnly"), value => SetContentToggle(scope, "MapMarkerLabelsOnly", value));
+            DrawQuestMarkerSettings(scope);
             DrawObjectCategorySettings(scope, "Treasure", "Show treasure", GetContentToggle(scope, "Treasure"), value => SetContentToggle(scope, "Treasure", value));
         } else
         {
@@ -148,7 +149,7 @@ public class ConfigWindow : Window, IDisposable
             DrawCheckbox("Show housing map markers", GetContentToggle(scope, "HousingMapMarkerInfo"), value => SetContentToggle(scope, "HousingMapMarkerInfo", value));
             DrawCheckbox("Show map markers with icons and labels", GetContentToggle(scope, "MapMarkersWithIcons"), value => SetContentToggle(scope, "MapMarkersWithIcons", value));
             DrawCheckbox("Show map markers with labels only", GetContentToggle(scope, "MapMarkerLabelsOnly"), value => SetContentToggle(scope, "MapMarkerLabelsOnly", value));
-            DrawIconCategorySettings(scope, "Quest", "Show quest markers", GetQuestIconOptions());
+            DrawQuestMarkerSettings(scope);
             DrawCheckbox("Show remote markers", GetContentToggle(scope, "RemoteMarker"), value => SetContentToggle(scope, "RemoteMarker", value));
             DrawCheckbox("Show sightseeing log entries", GetContentToggle(scope, "SightseeingLog"), value => SetContentToggle(scope, "SightseeingLog", value));
             DrawObjectCategorySettings(scope, "Treasure", "Show treasure", GetContentToggle(scope, "Treasure"), value => SetContentToggle(scope, "Treasure", value));
@@ -161,6 +162,17 @@ public class ConfigWindow : Window, IDisposable
         DrawSourceMasterToggle(scope, MapObjectSource.Downloaded, "Downloaded entries");
         ImGui.SameLine();
         DrawSourceMasterToggle(scope, MapObjectSource.SelfFound, "Self-found entries");
+    }
+
+    private void DrawQuestMarkerSettings(MapContentScope scope)
+    {
+        DrawCheckbox("Show quest markers", GetContentToggle(scope, "Quest"), value => SetContentToggle(scope, "Quest", value));
+        if (GetContentToggle(scope, "Quest"))
+        {
+            ImGui.Indent();
+            DrawIconCategorySettings(scope, "Quest", "Quest marker types", GetQuestIconOptions());
+            ImGui.Unindent();
+        }
     }
 
     private void DrawSourceMasterToggle(MapContentScope scope, MapObjectSource source, string label)
