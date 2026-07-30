@@ -74,7 +74,7 @@ namespace AkuTrack.Windows
             UploadManager uploadManager,
             AllaganToolsIpc allaganToolsIpc,
             ConfigWindow configWindow,
-            Configuration configuration) : base("AkuTrack - Search##akutrack_search")
+            Configuration configuration) : base("AkuTrack2 - Search##akutrack_search")
         {
             this.log = log;
             this.framework = framework;

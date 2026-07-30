@@ -22,7 +22,7 @@ public class MainWindow : Window, IDisposable
     // The user will see "My Amazing Window" as window title,
     // but for ImGui the ID is "My Amazing Window##With a hidden ID"
     public MainWindow(ObjTrackManager objTrackManager, IDataManager dataManager, IClientState clientState, ITextureProvider textureProvider)
-        : base("AkuTrack##akutrack_main", ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse)
+        : base("AkuTrack2##akutrack_main", ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse)
     {
         this.dataManager = dataManager;
         this.clientState = clientState;

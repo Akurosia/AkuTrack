@@ -65,7 +65,7 @@ public class DetailsWindow : Window, IDisposable
     // We give this window a constant ID using ###.
     // This allows for labels to be dynamic, like "{FPS Counter}fps###XYZ counter window",
     // and the window ID will always be "###XYZ counter window" for ImGui
-    public DetailsWindow(WindowSystem windowSystem, IPluginLog log, IFramework framework, IClientState clienState, IDataManager dataManager, ITextureProvider textureProvider, UploadManager uploadManager, AllaganToolsIpc allaganToolsIpc, AkuGameObject obj) : base($"AkuTrack - Details for {obj.t} {obj.bid}##akutrack_details_{obj.t}_{obj.bid}")
+    public DetailsWindow(WindowSystem windowSystem, IPluginLog log, IFramework framework, IClientState clienState, IDataManager dataManager, ITextureProvider textureProvider, UploadManager uploadManager, AllaganToolsIpc allaganToolsIpc, AkuGameObject obj) : base($"AkuTrack2 - Details for {obj.t} {obj.bid}##akutrack_details_{obj.t}_{obj.bid}")
     {
         this.windowSystem = windowSystem;
         this.log = log;

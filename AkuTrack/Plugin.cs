@@ -30,7 +30,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public Configuration Configuration { get; init; }
 
-    public readonly WindowSystem windowSystem = new("AkuTrack");
+    public readonly WindowSystem windowSystem = new("AkuTrack2");
     private ConfigWindow ConfigWindow { get; init; }
     private MainWindow MainWindow { get; init; }
     private MapWindow MapWindow { get; init; }

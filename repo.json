@@ -1,8 +1,8 @@
 [
   {
     "Author": "Enthusiastus",
-    "Name": "AkuTrack",
-    "InternalName": "AkuTrack",
+    "Name": "AkuTrack2",
+    "InternalName": "AkuTrack2",
     "Description": "Shows an improved ingame (and outgame map) and collects the seen information to display later.",
     "AssemblyVersion": "0.0.0.34",
     "TestingAssemblyVersion": "0.0.0.34",

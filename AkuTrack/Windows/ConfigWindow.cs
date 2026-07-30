@@ -21,7 +21,7 @@ public class ConfigWindow : Window, IDisposable
     // We give this window a constant ID using ###.
     // This allows for labels to be dynamic, like "{FPS Counter}fps###XYZ counter window",
     // and the window ID will always be "###XYZ counter window" for ImGui
-    public ConfigWindow(Configuration configuration, IDataManager dataManager, IPluginLog log) : base("AkuTrack - Config###akutrack_config")
+    public ConfigWindow(Configuration configuration, IDataManager dataManager, IPluginLog log) : base("AkuTrack2 - Config###akutrack_config")
     {
         /*Flags = ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoScrollbar |
                 ImGuiWindowFlags.NoScrollWithMouse;

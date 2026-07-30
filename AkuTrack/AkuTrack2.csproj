@@ -2,6 +2,8 @@
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
     <Version>0.0.33</Version>
+    <AssemblyName>AkuTrack2</AssemblyName>
+    <RootNamespace>AkuTrack2</RootNamespace>
     <PackageProjectUrl>https://github.com/goatcorp/SamplePlugin</PackageProjectUrl>
     <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
     <IsPackable>false</IsPackable>

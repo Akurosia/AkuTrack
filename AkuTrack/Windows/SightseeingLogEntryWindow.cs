@@ -12,7 +12,7 @@ public class SightseeingLogEntryWindow : Window, IDisposable
     private readonly SightseeingLogEntryInfo entry;
 
     public SightseeingLogEntryWindow(WindowSystem windowSystem, IPluginLog log, SightseeingLogEntryInfo entry)
-        : base($"AkuTrack - Vista #{entry.RowId}##akutrack_sightseeing_{entry.RowId}")
+        : base($"AkuTrack2 - Vista #{entry.RowId}##akutrack_sightseeing_{entry.RowId}")
     {
         this.windowSystem = windowSystem;
         this.entry = entry;

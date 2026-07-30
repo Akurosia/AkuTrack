@@ -143,7 +143,7 @@ public class MapWindow : Window, IDisposable
         ITextureSubstitutionProvider textureSubstitutionProvider,
         IPluginLog log
         )
-        : base("AkuTrack - Map##akutrack_map", ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse)
+        : base("AkuTrack2 - Map##akutrack_map", ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse)
     {
         this.plugin = plugin;
         this.mapStateManager = mapStateManager;

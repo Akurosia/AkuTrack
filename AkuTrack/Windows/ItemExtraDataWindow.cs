@@ -39,7 +39,7 @@ public class ItemExtraDataWindow : Window, IDisposable
         UploadManager uploadManager,
         AllaganToolsIpc allaganToolsIpc,
         uint itemId)
-        : base($"AkuTrack - Item extra data {itemId}##akutrack_item_extra_{itemId}")
+        : base($"AkuTrack2 - Item extra data {itemId}##akutrack_item_extra_{itemId}")
     {
         this.windowSystem = windowSystem;
         this.log = log;

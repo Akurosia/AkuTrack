@@ -1,9 +1,0 @@
-{
-  "Author": "Enthusiastus",
-  "Name": "AkuTrack",
-  "Punchline": "Shows an improved ingame (and outgame map) and collects the seen information to display later.",
-  "Description": "AkuTrack is a project to offer an improved ingame map enriched with information found by visiting on site.\n\nThis is achieved by collecting the data on a remote server once a user encounters it.\n\n\t- Adds NPC spawns to the map\n\t- Adds objects like Entrances and Exits\n\t- Adds Gathering Points independent of current job",
-  "ApplicableVersion": "any",
-  "IconUrl": "https://raw.githubusercontent.com/amki/AkuTrack/master/images/icon.png",
-  "Tags": ["plugin", "object"]
-}
