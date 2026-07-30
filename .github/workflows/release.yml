@@ -51,7 +51,7 @@ jobs:
                 dotnet build -c Release --no-restore --nologo -o ./bin/Release -p:Version=$version -p:AssemblyVersion=$version -p:FileVersion=$version
 
           - name: Generate Checksums
-            working-directory: AkuTrack/bin/Release/AkuTrack/
+            working-directory: AkuTrack/bin/Release/AkuTrack2/
             run: |
                 sha512sum latest.zip >> checksums.sha512
 
@@ -59,8 +59,8 @@ jobs:
             uses: softprops/action-gh-release@v2
             with:
                 files: |
-                    AkuTrack/bin/Release/AkuTrack/latest.zip
-                    AkuTrack/bin/Release/AkuTrack/checksums.sha512
+                    AkuTrack/bin/Release/AkuTrack2/latest.zip
+                    AkuTrack/bin/Release/AkuTrack2/checksums.sha512
                 prerelease: false # Releases cant be marked as prereleases as Dalamud wont be able to find them
                 append_body: true # Append the release notes to the release body
                 body_path: .github/release-notices.md # These notes are automatically added to the release body every time.
@@ -72,8 +72,8 @@ jobs:
             with:
                 name: Release Artifacts
                 path: |
-                    AkuTrack/bin/Release/AkuTrack/latest.zip
-                    AkuTrack/bin/Release/AkuTrack/checksums.sha512
+                    AkuTrack/bin/Release/AkuTrack2/latest.zip
+                    AkuTrack/bin/Release/AkuTrack2/checksums.sha512
 
           - name: Update repo.json
             run: |

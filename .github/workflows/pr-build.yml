@@ -1,4 +1,4 @@
-name: AkuTrack PR Builder
+name: AkuTrack2 PR Builder
 
 on:
   pull_request:
@@ -29,8 +29,8 @@ jobs:
     - name: Store artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: AkuTrack
-        path: .\AkuTrack\bin\x64\Release\AkuTrack\*
+        name: AkuTrack2
+        path: .\AkuTrack\bin\x64\Release\AkuTrack2\*
         if-no-files-found: error
         retention-days: 1
 
