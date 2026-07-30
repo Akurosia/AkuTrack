@@ -54,7 +54,7 @@ jobs:
             working-directory: AkuTrack/bin/Release/AkuTrack/
             run: |
                 sha512sum latest.zip >> checksums.sha512
-                
+
           - name: Create GitHub Release
             uses: softprops/action-gh-release@v2
             with:
@@ -68,7 +68,7 @@ jobs:
                 fail_on_unmatched_files: true # If the files arent found, fail the workflow and abort the release.
 
           - name: Upload Artifacts
-            uses: actions/upload-artifact@v4
+            uses: actions/upload-artifact@v5
             with:
                 name: Release Artifacts
                 path: |
@@ -83,7 +83,7 @@ jobs:
                 echo "Release Version: $release_version"
                 repo_url="$(echo "${{ github.server_url }}/${{ github.repository }}" | sed 's/#/\\#/g')"
                 echo "Repo URL: $repo_url"
-                                
+
                 # Update the JSON file using jq
                 jq --arg release_version "$release_version" \
                 --arg repo_url "$repo_url/releases/download/${{ github.ref_name }}/latest.zip" \
@@ -93,12 +93,12 @@ jobs:
                 .[0].DownloadLinkUpdate = $repo_url  |
                 .[0].DownloadLinkTesting = $repo_url' \
                 repo.json > tmp.json && mv tmp.json repo.json
-                
+
                 cat repo.json
-                
-                git add repo.json                
+
+                git add repo.json
                 git config --local user.name "github-actions [bot]"
                 git config --local user.email "github-actions@users.noreply.github.com"
                 git commit -m "Update repo.json for ${{ github.ref_name }}"
-                
+
                 git push origin HEAD:master
