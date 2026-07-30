@@ -858,6 +858,11 @@ public class MapWindow : Window, IDisposable
                 continue;
             }
 
+            if (ShouldHideCompletedQuest(quest.RowId))
+            {
+                continue;
+            }
+
             var level = quest.IssuerLocation.Value;
             if (level.Map.RowId != mapStateManager.currentMap.RowId || level.X == 0 && level.Z == 0)
             {
@@ -885,6 +890,17 @@ public class MapWindow : Window, IDisposable
                 AddNearbyElementsToSelection(ImGui.GetMousePos());
             }
         }
+    }
+
+    private static unsafe bool IsQuestComplete(uint questId)
+    {
+        var questManager = FFXIVClientStructs.FFXIV.Client.Game.QuestManager.Instance();
+        return questManager != null && FFXIVClientStructs.FFXIV.Client.Game.QuestManager.IsQuestComplete(questId);
+    }
+
+    private bool ShouldHideCompletedQuest(uint questId)
+    {
+        return configuration.HideCompletedQuestMarkers && IsQuestComplete(questId);
     }
 
     private void DrawTreasureMapSpots()
@@ -1273,7 +1289,7 @@ public class MapWindow : Window, IDisposable
     private void DrawQuestIcon(uint iconId, Vector3 position, string tooltip)
     {
         var texture = textureProvider.GetFromGameIcon((int)iconId).GetWrapOrEmpty();
-        var size = texture.Size / 2.0f;
+        var size = Vector2.Min(texture.Size / 2.0f, new Vector2(32.0f * ImGuiHelpers.GlobalScale));
         var p = GetMapCoordinateFor3D(position) * Scale + DrawPosition - size / 2.0f;
 
         if (configuration.DrawDebugSquares)
@@ -1734,70 +1750,131 @@ public class MapWindow : Window, IDisposable
         using var contextMenu = ImRaii.ContextPopup("AkuTrack_AkuObject_Context_Menu");
         if (!contextMenu) return;
 
-        foreach (var obj in objs)
+        var totalEntries = objs.Count + markers.Count;
+        if (totalEntries <= 10)
         {
-            foreach (var aetheryte in GetTeleportOptionsForObject(obj))
+            foreach (var obj in objs)
             {
-                if (ImGui.MenuItem($"Teleport {aetheryte.Name} ({aetheryte.GilCost} gil)##teleport_obj_{aetheryte.AetheryteId}_{aetheryte.SubIndex}"))
+                DrawObjectContextMenuEntry(obj);
+            }
+
+            foreach (var marker in markers)
+            {
+                DrawMapMarkerContextMenuEntry(marker);
+            }
+
+            return;
+        }
+
+        foreach (var group in objs.GroupBy(GetObjectContextMenuCategory).OrderBy(group => group.Key))
+        {
+            var groupedObjects = group.ToList();
+            if (groupedObjects.Count == 1)
+            {
+                DrawObjectContextMenuEntry(groupedObjects[0]);
+                continue;
+            }
+
+            if (ImGui.BeginMenu($"{group.Key} ({groupedObjects.Count})##akutrack_context_group_{group.Key}"))
+            {
+                foreach (var obj in groupedObjects)
                 {
-                    TeleportToAetheryte(aetheryte);
+                    DrawObjectContextMenuEntry(obj);
+                }
+
+                ImGui.EndMenu();
+            }
+        }
+
+        if (markers.Count == 1)
+        {
+            DrawMapMarkerContextMenuEntry(markers[0]);
+        }
+        else if (markers.Count > 1 && ImGui.BeginMenu($"Map markers ({markers.Count})##akutrack_context_group_map_markers"))
+        {
+            foreach (var marker in markers)
+            {
+                DrawMapMarkerContextMenuEntry(marker);
+            }
+
+            ImGui.EndMenu();
+        }
+    }
+
+    private void DrawObjectContextMenuEntry(AkuGameObject obj)
+    {
+        foreach (var aetheryte in GetTeleportOptionsForObject(obj))
+        {
+            if (ImGui.MenuItem($"Teleport {aetheryte.Name} ({aetheryte.GilCost} gil)##teleport_obj_{aetheryte.AetheryteId}_{aetheryte.SubIndex}"))
+            {
+                TeleportToAetheryte(aetheryte);
+            }
+        }
+
+        var label = obj.objectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Mount
+            ? $"{obj.t} {dataManager.GetExcelSheet<Mount>().First(x => x.ModelChara.RowId == obj.moid).Singular}({obj.moid})"
+            : $"{obj.t} {obj.name}({obj.bid})";
+
+        if (ImGui.MenuItem($"{label}##object_{GetObjectSelectionKey(obj)}"))
+        {
+            var newName = $"akutrack_details_{obj.bid}";
+            foreach (var w in windowSystem.Windows)
+            {
+                var wName = w.WindowName.Split("##")[1];
+                if (wName == newName)
+                {
+                    return;
                 }
             }
 
-            if (obj.objectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Mount)
+            var dw = ActivatorUtilities.CreateInstance<DetailsWindow>(plugin.serviceProvider, new object[] { obj });
+            windowSystem.AddWindow(dw);
+            dw.Toggle();
+        }
+    }
+
+    private void DrawMapMarkerContextMenuEntry(Lumina.Excel.Sheets.MapMarker marker)
+    {
+        foreach (var aetheryte in GetTeleportOptionsForMapMarker(marker))
+        {
+            if (ImGui.MenuItem($"Teleport {aetheryte.Name} ({aetheryte.GilCost} gil)##teleport_{aetheryte.AetheryteId}_{aetheryte.SubIndex}"))
             {
-                var name = dataManager.GetExcelSheet<Mount>().First(x => x.ModelChara.RowId == obj.moid).Singular.ToString();
-                if (ImGui.MenuItem($"{obj.t} {name}({obj.moid})"))
-                {
-                    string newName = $"akutrack_details_{obj.bid}";
-                    foreach (var w in windowSystem.Windows)
-                    {
-                        var wName = w.WindowName.Split("##")[1];
-                        if (wName == newName)
-                            return;
-                    }
-                    var dw = ActivatorUtilities.CreateInstance<DetailsWindow>(plugin.serviceProvider, new object[] { obj });
-                    windowSystem.AddWindow(dw);
-                    dw.Toggle();
-                }                
+                TeleportToAetheryte(aetheryte);
+            }
+        }
+
+        if (ImGui.MenuItem($"MapMarker ({marker.RowId}.{marker.SubrowId}) {marker.PlaceNameSubtext.Value.Name}##map_marker_{marker.RowId}_{marker.SubrowId}"))
+        {
+            if (marker.DataKey.TryGetValue<Lumina.Excel.Sheets.Map>(out var dataKeyMap))
+            {
+                log.Debug($"Found map {dataKeyMap.PlaceName.Value.Name}");
+                mapStateManager.SwitchMap(dataKeyMap.RowId);
             }
             else
             {
-                if (ImGui.MenuItem($"{obj.t} {obj.name}({obj.bid})"))
-                {
-                    string newName = $"akutrack_details_{obj.bid}";
-                    foreach (var w in windowSystem.Windows)
-                    {
-                        var wName = w.WindowName.Split("##")[1];
-                        if (wName == newName)
-                            return;
-                    }
-                    var dw = ActivatorUtilities.CreateInstance<DetailsWindow>(plugin.serviceProvider, new object[] { obj });
-                    windowSystem.AddWindow(dw);
-                    dw.Toggle();
-                }
+                log.Debug("Tut nix beim klicken, sorry.");
             }
-            
         }
-        foreach(var mark in markers) {
-            foreach (var aetheryte in GetTeleportOptionsForMapMarker(mark))
-            {
-                if (ImGui.MenuItem($"Teleport {aetheryte.Name} ({aetheryte.GilCost} gil)##teleport_{aetheryte.AetheryteId}_{aetheryte.SubIndex}"))
-                {
-                    TeleportToAetheryte(aetheryte);
-                }
-            }
+    }
 
-            if(ImGui.MenuItem($"MapMarker ({mark.RowId}.{mark.SubrowId}) {mark.PlaceNameSubtext.Value.Name.ToString()}")) {
-                if (mark.DataKey.TryGetValue<Lumina.Excel.Sheets.Map>(out var dataKeyMap))
-                {
-                    log.Debug($"Found map {dataKeyMap.PlaceName.Value.Name.ToString()}");
-                    mapStateManager.SwitchMap(dataKeyMap.RowId);
-                } else {
-                    log.Debug("Tut nix beim klicken, sorry.");
-                }
-            }
-        }
+    private static string GetObjectContextMenuCategory(AkuGameObject obj)
+    {
+        return obj.t switch
+        {
+            "Aetheryte" => "Aetherytes",
+            "BattleNpc" => "Battle NPCs",
+            "CEs" => "Critical engagements",
+            "EventNpc" => "Event NPCs",
+            "EventObj" => "Event objects",
+            "FATE" => "FATEs",
+            "Flag" => "Flags",
+            "GatheringPoint" => "Gathering points",
+            "Pc" => "Players",
+            "Quest" => "Quests",
+            "Treasure" => "Treasure",
+            "TreasureMaps" => "Treasure maps",
+            _ => obj.t,
+        };
     }
 
     private IEnumerable<ClickedAetheryte> GetTeleportOptionsForObject(AkuGameObject obj)

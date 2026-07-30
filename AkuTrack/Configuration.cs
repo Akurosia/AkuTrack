@@ -40,6 +40,7 @@ public class Configuration : IPluginConfiguration
     public bool DrawFishingSpots { get; set; } = false;
     public bool DrawSpearfishingSpots { get; set; } = false;
     public bool DrawQuestMarkers { get; set; } = true;
+    public bool HideCompletedQuestMarkers { get; set; } = false;
     public bool DrawHousingMapMarkers { get; set; } = false;
     public bool DrawCriticalEngagements { get; set; } = true;
     public bool DrawFates { get; set; } = true;

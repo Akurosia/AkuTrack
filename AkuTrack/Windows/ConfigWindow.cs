@@ -170,6 +170,7 @@ public class ConfigWindow : Window, IDisposable
         if (GetContentToggle(scope, "Quest"))
         {
             ImGui.Indent();
+            DrawCheckbox("Hide completed quests", configuration.HideCompletedQuestMarkers, value => configuration.HideCompletedQuestMarkers = value);
             DrawIconCategorySettings(scope, "Quest", "Quest marker types", GetQuestIconOptions());
             ImGui.Unindent();
         }
