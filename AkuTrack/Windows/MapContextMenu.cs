@@ -8,7 +8,7 @@ namespace AkuTrack.Windows
     {
         public void Draw(Action placeFlag)
         {
-            using var contextMenu = ImRaii.ContextPopup("AkuTrack_Context_Menu");
+            using var contextMenu = ImRaii.Popup("AkuTrack_Context_Menu");
             if (!contextMenu) return;
 
             if (ImGui.MenuItem("Place Flag"))
