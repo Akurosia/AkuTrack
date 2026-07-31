@@ -4,8 +4,8 @@
     "Name": "AkuTrack2",
     "InternalName": "AkuTrack2",
     "Description": "Shows an improved ingame (and outgame map) and collects the seen information to display later.",
-    "AssemblyVersion": "0.0.0.37",
-    "TestingAssemblyVersion": "0.0.0.37",
+    "AssemblyVersion": "0.0.0.38",
+    "TestingAssemblyVersion": "0.0.0.38",
     "RepoUrl": "https://github.com/amki/AkuTrack",
     "IconUrl": "https://raw.githubusercontent.com/amki/AkuTrack/master/images/icon.png",
     "ApplicableVersion": "any",
@@ -15,8 +15,8 @@
       "plugin",
       "object"
     ],
-    "DownloadLinkInstall": "https://github.com/Akurosia/AkuTrack/releases/download/v0.0.0.37/latest.zip",
-    "DownloadLinkTesting": "https://github.com/Akurosia/AkuTrack/releases/download/v0.0.0.37/latest.zip",
-    "DownloadLinkUpdate": "https://github.com/Akurosia/AkuTrack/releases/download/v0.0.0.37/latest.zip"
+    "DownloadLinkInstall": "https://github.com/Akurosia/AkuTrack/releases/download/v0.0.0.38/latest.zip",
+    "DownloadLinkTesting": "https://github.com/Akurosia/AkuTrack/releases/download/v0.0.0.38/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/Akurosia/AkuTrack/releases/download/v0.0.0.38/latest.zip"
   }
 ]
