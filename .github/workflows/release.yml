@@ -50,6 +50,16 @@ jobs:
                 echo "Version: $version"
                 dotnet build -c Release --no-restore --nologo -o ./bin/Release -p:Version=$version -p:AssemblyVersion=$version -p:FileVersion=$version
 
+          - name: Validate Release Package
+            working-directory: AkuTrack/bin/Release/AkuTrack2/
+            run: |
+                test -f latest.zip
+                unzip -l latest.zip
+                unzip -l latest.zip | grep -q 'AkuTrack2.json'
+                unzip -l latest.zip | grep -q 'AkuTrack2.dll'
+                unzip -l latest.zip | grep -q 'AkuTrack2.deps.json'
+                unzip -p latest.zip AkuTrack2.json | jq -e '.Name == "AkuTrack2"'
+
           - name: Generate Checksums
             working-directory: AkuTrack/bin/Release/AkuTrack2/
             run: |
